@@ -12,7 +12,7 @@
   },
   {
     "name": "lucky-lillia-plugin-blipreview",
-    "version": "1.0.17",
+    "version": "1.0.18",
     "category": "chat",
     "title": "B站预览",
     "description": "自动解析 BV、av、b23 短链及 B站分享卡片，发送视频封面和信息，可选 AI 总结。",
