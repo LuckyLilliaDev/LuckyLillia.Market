@@ -9,7 +9,7 @@ const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9
 /** Same values, labels and order as the Bot plugin page and SDK PluginCategory. */
 export const PLUGIN_CATEGORIES = Object.freeze({
   protocol: '协议端', adapter: '适配器', chat: '消息互动',
-  tool: '工具', service: '依赖组件', other: '其他',
+  tool: '工具', service: '依赖组件', theme: '主题', other: '其他',
 });
 
 export const isCategory = value => typeof value === 'string' && Object.hasOwn(PLUGIN_CATEGORIES, value);

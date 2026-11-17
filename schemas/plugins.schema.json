@@ -74,7 +74,7 @@
       "category": {
         "description": "Category selected during registration, using the Bot PluginCategory values. Older entries may omit it.",
         "type": "string",
-        "enum": ["protocol", "adapter", "chat", "tool", "service", "other"]
+        "enum": ["protocol", "adapter", "chat", "tool", "service", "theme", "other"]
       },
       "title": {
         "type": "string",

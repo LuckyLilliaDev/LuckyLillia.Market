@@ -25,6 +25,7 @@ body:
         - 消息互动 (chat)
         - 工具 (tool)
         - 依赖组件 (service)
+        - 主题 (theme)
         - 其他 (other)
     validations:
       required: true

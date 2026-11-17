@@ -8,7 +8,7 @@ import { validateChanges } from '../scripts/validate-pr.mjs';
 
 const categories = [
   ['protocol', '协议端'], ['adapter', '适配器'], ['chat', '消息互动'],
-  ['tool', '工具'], ['service', '依赖组件'], ['other', '其他'],
+  ['tool', '工具'], ['service', '依赖组件'], ['theme', '主题'], ['other', '其他'],
 ];
 const manifest = {
   name: '@author/category-example', version: '1.0.0', description: '分类登记测试',
@@ -21,7 +21,7 @@ const approved = { approved: true, status: 'approved', summary: '审查通过' }
 const review = async () => approved;
 const body = value => `### npm 包名\n\n${manifest.name}\n\n### 插件分类\n\n${value}\n\n### icon\n\n_No response_\n`;
 
-test('注册分类沿用 Bot 的六个值，支持下拉选项、中文名和原始值', async () => {
+test('注册分类沿用 Bot 的七个值，支持下拉选项、中文名和原始值', async () => {
   assert.deepEqual(Object.entries(PLUGIN_CATEGORIES), categories);
   const schema = JSON.parse(await readFile(new URL('../schemas/plugins.schema.json', import.meta.url), 'utf8'));
   assert.deepEqual(schema.items.properties.category.enum, categories.map(([key]) => key));
