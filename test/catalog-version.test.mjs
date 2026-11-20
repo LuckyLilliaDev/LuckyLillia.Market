@@ -142,8 +142,14 @@ test('登记流程从 GitHub 单文件快照创建包含版本的目录提交', 
       if (path === '/git/commits') return { sha: 'new-commit' };
       if (path === '/git/refs') return {};
       if (path === '/pulls') return { number: 7, html_url: 'https://github.com/example/market/pull/7' };
-      if (path === '/actions/workflows/validate-catalog.yml/dispatches') return;
+      if (path === '/actions/workflows/publish.yml/dispatches') return;
       if (path === '/issues/42/comments') return { id: 1 };
+    } else if (method === 'PUT' && path === '/pulls/7/merge') {
+      return { merged: true };
+    } else if (method === 'DELETE' && path === '/git/refs/heads/market%2Fregister-issue-42') {
+      return;
+    } else if (method === 'PATCH' && path === '/issues/42') {
+      return {};
     }
     assert.fail(`意外的 GitHub 请求：${method} ${path}`);
   };
@@ -152,7 +158,17 @@ test('登记流程从 GitHub 单文件快照创建包含版本的目录提交', 
     resolve: async () => ({ plugin, version: plugin.version, manifest: metadata() }),
     review: async () => approved, env: {}, save: async () => {},
   });
-  assert.deepEqual(result, { number: 7, sha: 'new-commit' });
+  assert.deepEqual(result, { number: 7, sha: 'new-commit', merged: true });
+  // Passed checks need no maintainer: merged at the commit just made, then published and the Issue closed
+  const after = requests.slice(requests.findIndex(request => request.path === '/pulls' && request.method === 'POST') + 1)
+    .map(({ method, path, body }) => ({ method, path, body }));
+  assert.deepEqual(after.map(request => `${request.method} ${request.path}`), [
+    'PUT /pulls/7/merge', 'DELETE /git/refs/heads/market%2Fregister-issue-42',
+    'GET ', 'POST /actions/workflows/publish.yml/dispatches', 'POST /issues/42/comments', 'PATCH /issues/42',
+  ]);
+  assert.deepEqual(after[0].body, { sha: 'new-commit', merge_method: 'squash', commit_title: `登记插件：${plugin.name} (#7)` });
+  assert.match(after[4].body.body, /检查已通过，已自动合并登记 PR/);
+  assert.deepEqual(after[5].body, { state: 'closed', state_reason: 'completed' });
   const tree = requests.find(request => request.path === '/git/trees').body;
   assert.equal(tree.base_tree, 'base-tree');
   assert.deepEqual(tree.tree.map(file => file.path), ['plugins.json']);

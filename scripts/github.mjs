@@ -109,4 +109,29 @@ export class GitHub {
       ref: await this.defaultBranch(), inputs: { pr_number: String(prNumber) },
     });
   }
+
+  // A merge made with GITHUB_TOKEN triggers no push workflow: dispatch publishing explicitly.
+  async dispatchPublish() {
+    await this.request('POST', '/actions/workflows/publish.yml/dispatches', { ref: await this.defaultBranch() });
+  }
+
+  /** Squash-merges the PR, only if its head is still `sha`. */
+  async merge(prNumber, sha, title) {
+    return this.request('PUT', `/pulls/${prNumber}/merge`, { sha, merge_method: 'squash', commit_title: title });
+  }
+
+  async deleteBranch(name) {
+    await this.request('DELETE', `/git/refs/heads/${encodeURIComponent(name)}`);
+  }
+
+  async closeIssue(number) {
+    await this.request('PATCH', `/issues/${number}`, { state: 'closed', state_reason: 'completed' });
+  }
+
+  /** Whether the user may change this repository (admin, maintain or write), and so approve registrations. */
+  async canWrite(login) {
+    if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(login ?? '')) return false;
+    const data = await this.optional(`/collaborators/${encodeURIComponent(login)}/permission`);
+    return ['admin', 'maintain', 'write'].includes(data?.role_name) || ['admin', 'write'].includes(data?.permission);
+  }
 }

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { metadataToPlugin } from '../scripts/catalog.mjs';
 import { GitHub } from '../scripts/github.mjs';
-import { registerEvent } from '../scripts/register-issue.mjs';
+import { isApprovalCommand, registerEvent } from '../scripts/register-issue.mjs';
 
 const name = '@author/comment-test';
 const bot = { login: 'github-actions[bot]', type: 'Bot' };
@@ -28,7 +28,19 @@ function fixture({ comments = [], ...initial } = {}) {
     catalog: [], branchPlugins: null, pull: null, ...initial,
   };
   const requests = [], reports = [], logs = [], reviews = [], resolves = [], commits = [], dispatches = [], snapshots = [];
+  const merges = [], published = [], closed = [];
   const github = new GitHub({ repository: 'example/market', token: 'test-only-token' });
+  // Merging is refused unless a test makes the PR mergeable: the older tests are about what comes before it
+  github.merge = async (number, sha, title) => {
+    if (!state.mergeable) throw new Error('远程服务返回 HTTP 405。');
+    merges.push({ number, sha, title });
+    state.catalog = structuredClone(state.branchPlugins);
+    state.pull = null;
+  };
+  github.deleteBranch = async () => { state.branchPlugins = null; };
+  github.dispatchPublish = async () => published.push(true);
+  github.closeIssue = async number => { closed.push(number); state.issue.state = 'closed'; };
+  github.canWrite = async login => (state.writers ?? []).includes(login);
   github.defaultBranch = async () => 'main';
   github.snapshot = async branch => {
     snapshots.push(branch);
@@ -77,8 +89,59 @@ function fixture({ comments = [], ...initial } = {}) {
     save: async (file, report) => reports.push({ file, ...report }),
     log: message => logs.push(message), ...options,
   });
-  return { state, github, run, comments, requests, reports, logs, reviews, resolves, commits, dispatches, snapshots };
+  return { state, github, run, comments, requests, reports, logs, reviews, resolves, commits, dispatches, snapshots, merges, published, closed };
 }
+
+const maintainer = { login: 'maintainer', type: 'User' };
+const approval = (issue, by = maintainer, body = '/approve') => ({ action: 'created', issue: structuredClone(issue), comment: { user: by, body } });
+
+test('识别 /approve 指令：评论开头的 /approve，可带说明', () => {
+  for (const body of ['/approve', '  /approve\n', '/APPROVE 已人工确认无风险']) assert.ok(isApprovalCommand(body), body);
+  for (const body of ['请 /approve', '/approved', '/approve-all', '', undefined]) assert.ok(!isApprovalCommand(body), String(body));
+});
+
+test('检查通过后自动合并 PR、请求发布并关闭 Issue，无需维护者', async () => {
+  const f = fixture({ mergeable: true, assessment: { approved: true, status: 'approved', summary: '审查通过' } });
+  const result = await f.run();
+  assert.equal(result.merged, true);
+  assert.deepEqual(f.merges, [{ number: 7, sha: 'new-commit', title: `登记插件：${name} (#7)` }]);
+  assert.equal(f.published.length, 1);
+  assert.deepEqual(f.closed, [42]);
+  assert.equal(f.dispatches.length, 0);
+  assert.match(f.comments.at(-1).body, /检查已通过，已自动合并登记 PR/);
+});
+
+test('维护者回复 /approve 跳过 AI 审查，同一版本也重新登记并自动合并', async () => {
+  const f = fixture({ mergeable: true, writers: ['maintainer'], comments: [recorded('1.0.0')] });
+  const result = await f.run({ event: approval(f.state.issue) });
+  assert.equal(result.merged, true);
+  assert.equal(f.reviews.length, 0);
+  assert.equal(f.commits.length, 1);
+  assert.equal(f.merges.length, 1);
+  assert.deepEqual(f.closed, [42]);
+  const visible = f.comments.at(-1).body.replace(/<!--[\s\S]*?-->/g, '');
+  assert.match(visible, /维护者 maintainer 已手动批准，已自动合并/);
+  assert.match(visible, /跳过 AI 审查/);
+});
+
+test('没有写权限的人回复 /approve 只算普通评论，仍需通过审查', async () => {
+  const f = fixture({ mergeable: true, writers: ['maintainer'] });
+  await f.run({ event: approval(f.state.issue, user) });
+  assert.equal(f.reviews.length, 1);
+  assert.equal(f.merges.length, 0);
+  assert.match(f.comments.at(-1).body, /登记暂缓/);
+  assert.ok(f.logs.some(message => message.includes('author 没有写权限')));
+});
+
+test('自动合并失败时保留 PR，触发校验并等待维护者合并', async () => {
+  const f = fixture({ assessment: { approved: true, status: 'approved', summary: '审查通过' } });
+  const result = await f.run();
+  assert.equal(result.merged, false);
+  assert.deepEqual(f.dispatches, [7]);
+  assert.equal(f.published.length, 0);
+  assert.equal(f.closed.length, 0);
+  assert.match(f.comments.at(-1).body, /自动合并未成功[\s\S]*等待维护者合并/);
+});
 
 for (const status of ['blocked', 'error']) {
   test(`未创建 PR 的 ${status} 审查也记录版本，同版本新评论不重复审查或回复`, async () => {

@@ -70,7 +70,21 @@ export function parseRegistrationScreenshots(body) {
   return screenshots;
 }
 
-export async function prepareRegistration(name, catalog, { category, icon, screenshots, previousVersion, resolve = resolvePlugin, review = reviewPackage } = {}) {
+/** A maintainer's `/approve` comment: the first word of the comment, anything after it is a note. */
+export function isApprovalCommand(body) {
+  return /^\s*\/approve(?:\s|$)/i.test(String(body ?? ''));
+}
+
+/** What a maintainer's approval puts in place of the AI review. */
+export function maintainerAssessment(login) {
+  return { approved: true, status: 'approved', summary: `维护者 ${login} 已手动批准，跳过 AI 审查。`, approvedBy: login };
+}
+
+/**
+ * `approvedBy`: the maintainer who approved it with `/approve`, which takes the place of the AI review. The npm
+ * metadata, icon and screenshots are checked all the same.
+ */
+export async function prepareRegistration(name, catalog, { category, icon, screenshots, previousVersion, approvedBy, resolve = resolvePlugin, review = reviewPackage } = {}) {
   if (category !== undefined && !isCategory(category)) throw new Error('请选择有效的插件分类。');
   const registered = catalog.plugins.find(plugin => plugin.name === name);
   if (registered) return { duplicate: true, version: registered.version };
@@ -80,7 +94,7 @@ export async function prepareRegistration(name, catalog, { category, icon, scree
   if (icon !== undefined && icon !== resolved.plugin.icon) throw new Error('Issue 中的 icon 与所检查 npm 版本的 package.json.llbot.icon 不一致，请填写该版本声明的相同图片路径或地址。');
   const publishedScreenshots = (resolved.plugin.screenshots ?? []).map(item => typeof item === 'string' ? item : item.src);
   if (screenshots !== undefined && !same(screenshots, publishedScreenshots)) throw new Error('Issue 中的 screenshots 与所检查 npm 版本的 package.json.llbot.screenshots 不一致，请按相同顺序每行填写一个图片路径（对象项填写 src），或留空自动读取。');
-  const assessment = await review(resolved.manifest);
+  const assessment = approvedBy ? maintainerAssessment(approvedBy) : await review(resolved.manifest);
   if (!assessment.approved) return { ...resolved, plugin, assessment, accepted: false };
   return {
     ...resolved, plugin, assessment, accepted: true,
@@ -88,7 +102,7 @@ export async function prepareRegistration(name, catalog, { category, icon, scree
   };
 }
 
-export async function registerIssue({ github = new GitHub(), issue, checkVersion = false, resolve = resolvePlugin, review, env = process.env, save = saveReport, log = console.log } = {}) {
+export async function registerIssue({ github = new GitHub(), issue, checkVersion = false, approvedBy, resolve = resolvePlugin, review, env = process.env, save = saveReport, log = console.log } = {}) {
   if (!isRegistrationIssue(issue)) return;
   let name, version, previousVersion;
   const url = runUrl(env);
@@ -112,7 +126,7 @@ export async function registerIssue({ github = new GitHub(), issue, checkVersion
       }
     }
     const result = await prepareRegistration(name, catalog, {
-      category, icon, screenshots, previousVersion, review,
+      category, icon, screenshots, previousVersion, approvedBy, review,
       resolve: async requestedName => {
         const resolved = await resolve(requestedName);
         version = resolved.version;
@@ -133,7 +147,7 @@ export async function registerIssue({ github = new GitHub(), issue, checkVersion
       return;
     }
     if (!result.accepted) {
-      await comment(`登记暂缓，尚未写入目录。发布新版本后可在此 Issue 新增评论触发检查；需要重试同一版本时，请编辑此 Issue 或重新运行登记工作流。\n\n${reviewSummary(result.assessment)}`);
+      await comment(`登记暂缓，尚未写入目录。发布新版本后可在此 Issue 新增评论触发检查；需要重试同一版本时，请编辑此 Issue 或重新运行登记工作流。维护者确认无误时，可回复 <code>/approve</code> 直接批准。\n\n${reviewSummary(result.assessment)}`);
       return;
     }
     if (branchCatalog === undefined) {
@@ -154,13 +168,30 @@ export async function registerIssue({ github = new GitHub(), issue, checkVersion
     const pull = pulls[0]
       ? await github.request('PATCH', `/pulls/${pulls[0].number}`, { title: `登记插件：${name}`, body })
       : await github.request('POST', '/pulls', { title: `登记插件：${name}`, head: branch, base, body, maintainer_can_modify: true });
+    // Passed (by the review or a maintainer): merge at once, no maintainer needed
+    const passed = approvedBy ? `维护者 ${literal(approvedBy)} 已手动批准` : '检查已通过';
+    let mergeError;
+    try {
+      await github.merge(pull.number, sha, `登记插件：${name} (#${pull.number})`);
+    } catch (error) {
+      mergeError = error;
+    }
+    if (!mergeError) {
+      await github.deleteBranch(branch).catch(error => log(`[market/register] 删除分支 ${branch} 失败：${error.message}`));
+      // The hourly scan publishes too, should this dispatch fail
+      await github.dispatchPublish().catch(error => log(`[market/register] 请求发布失败，将由每小时任务发布：${error.message}`));
+      await comment(`${passed}，已自动合并登记 PR： <${pull.html_url}>\n\n<code>${literal(name)}</code> 首次版本 <code>${literal(result.version)}</code>，几分钟后出现在插件市场；之后的版本由每小时检查任务维护。\n\n${reviewSummary(result.assessment)}`);
+      await github.closeIssue(issue.number);
+      return { number: pull.number, sha, merged: true };
+    }
+    log(`[market/register] Issue #${issue.number}: 自动合并 PR #${pull.number} 失败：${mergeError.message}`);
     // GITHUB_TOKEN-generated PRs do not trigger pull_request. Explicitly dispatch trusted validation.
     await github.dispatchValidation(pull.number);
-    await comment(`字段检查已通过，已创建登记 PR： <${pull.html_url}>\n\n首次版本为 <code>${literal(result.version)}</code>，合并后发布到 npm 目录包。\n\n${reviewSummary(result.assessment)}`);
-    return { number: pull.number, sha };
+    await comment(`${passed}，已创建登记 PR： <${pull.html_url}>\n\n自动合并未成功（可能与其他登记同时修改了目录），等待维护者合并；维护者也可回复 <code>/approve</code> 重试。首次版本为 <code>${literal(result.version)}</code>。\n\n${reviewSummary(result.assessment)}`);
+    return { number: pull.number, sha, merged: false };
   } catch (error) {
     await save(`registration-${issue.number}`, { name, version, previousVersion, error: error.message, retryable: Boolean(error.retryable) });
-    await comment(`登记未完成，请根据下列原因处理后编辑此 Issue，或由维护者重跑工作流。${error.retryable ? '本次是临时服务错误，不代表包或仓库无效。' : ''}\n\n<pre>${literal(error.message)}</pre>`);
+    await comment(`登记未完成，请根据下列原因处理后编辑此 Issue，或由维护者重跑工作流。${error.retryable ? '本次是临时服务错误，不代表包或仓库无效；审查服务出错时，维护者也可回复 <code>/approve</code> 跳过 AI 审查。' : ''}\n\n<pre>${literal(error.message)}</pre>`);
     throw error;
   }
 }
@@ -168,6 +199,13 @@ export async function registerIssue({ github = new GitHub(), issue, checkVersion
 export async function registerEvent({ github = new GitHub(), event, env = process.env, ...options } = {}) {
   const commentEvent = env.GITHUB_EVENT_NAME === 'issue_comment';
   if (commentEvent && (event.action !== 'created' || event.comment?.user?.type !== 'User' || !isRegistrationIssue(event.issue))) return;
+  // `/approve` from someone who may write to the repository; from anyone else it is an ordinary comment
+  let approvedBy;
+  if (commentEvent && isApprovalCommand(event.comment.body)) {
+    const login = event.comment.user.login;
+    if (await github.canWrite(login)) approvedBy = login;
+    else (options.log ?? console.log)(`[market/register] ${login} 没有写权限，/approve 按普通评论处理。`);
+  }
   const requested = env.MARKET_ISSUE_NUMBER || event.inputs?.issue_number;
   if (requested && !/^[1-9]\d*$/.test(requested)) throw new Error('Issue 编号无效');
   // Queued comments must use the current Issue body and state.
@@ -175,9 +213,9 @@ export async function registerEvent({ github = new GitHub(), event, env = proces
   const issue = issueNumber ? await github.request('GET', `/issues/${issueNumber}`) : event.issue;
   if (!issue) throw new Error('没有登记 Issue');
   return registerIssue({
-    ...options, github, issue, env,
-    // Explicit workflow reruns can recover from service errors without an npm release.
-    checkVersion: commentEvent && Number(env.GITHUB_RUN_ATTEMPT ?? 1) === 1,
+    ...options, github, issue, env, approvedBy,
+    // Explicit workflow reruns and approvals check the same version again, e.g. after a service error.
+    checkVersion: commentEvent && !approvedBy && Number(env.GITHUB_RUN_ATTEMPT ?? 1) === 1,
   });
 }
 
