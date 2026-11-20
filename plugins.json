@@ -1,5 +1,16 @@
 [
   {
+    "name": "@cindifind/java-bridge",
+    "version": "1.0.0",
+    "category": "adapter",
+    "title": "Java 插件桥接",
+    "description": "让 Java 写的插件跑在独立的 Java 进程里，收发 OneBot 11 的事件、调用 OneBot 11 的 API",
+    "author": {
+      "name": "Cindifind"
+    },
+    "repository": "https://github.com/Cindifind/birdge-java"
+  },
+  {
     "name": "@luckylillia/plugin-aiprovider",
     "version": "1.0.1",
     "category": "service",
